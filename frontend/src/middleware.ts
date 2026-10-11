@@ -9,8 +9,7 @@ import { getDefaultConfig } from "./utils/defaultConfig.util";
 // - Admin privileges
 
 export const config = {
-  // share-debug-log: TEMPORARY DEBUG (dockhand only, not part of the pull request)
-  matcher: "/((?!api|static|.*\\..*|_next|share-debug-log).*)",
+  matcher: "/((?!api|static|.*\\..*|_next).*)",
 };
 
 async function fetchConfig(apiUrl: string): Promise<any> {

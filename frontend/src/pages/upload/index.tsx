@@ -33,10 +33,7 @@ import {
   getNormalizedFileName,
   filterDuplicateFiles,
 } from "../../utils/file.util";
-import {
-  consumeShareDebug,
-  consumeSharedFiles,
-} from "../../utils/shareTarget.util";
+import { consumeSharedFiles } from "../../utils/shareTarget.util";
 
 const promiseLimit = pLimit(3);
 let errorToastShown = false;
@@ -218,31 +215,6 @@ const Upload = ({
   // Pick up files shared to the installed web app (Web Share Target API)
   useEffect(() => {
     if (isReverseShare) return;
-
-    // TEMPORARY DEBUG (dockhand only, not part of the pull request)
-    consumeShareDebug().then((debug) => {
-      if (!debug) return;
-      let text = debug;
-      try {
-        text = JSON.stringify(JSON.parse(debug), null, 2);
-      } catch {
-        // show the raw text
-      }
-      modals.openModal({
-        title: "share debug",
-        children: (
-          <pre
-            style={{
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-all",
-              fontSize: 12,
-            }}
-          >
-            {text}
-          </pre>
-        ),
-      });
-    });
 
     consumeSharedFiles().then((sharedFiles) => {
       if (sharedFiles.length > 0) handleDropzoneFilesChanged(sharedFiles);

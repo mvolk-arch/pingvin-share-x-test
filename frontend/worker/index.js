@@ -4,77 +4,6 @@
 
 const SHARE_TARGET_PATH = "/share-target";
 const SHARE_TARGET_CACHE = "share-target";
-// TEMPORARY DEBUG (dockhand only, not part of the pull request)
-const SHARE_DEBUG_CACHE = "share-target-debug";
-
-const storeDebug = async (info) => {
-  try {
-    const cache = await caches.open(SHARE_DEBUG_CACHE);
-    await cache.put(
-      new Request("/share-target-debug"),
-      new Response(JSON.stringify(info)),
-    );
-  } catch (e) {
-    // ignore
-  }
-};
-
-// TEMPORARY DEBUG: try to read the body in different ways on clones of the
-// request to see which of them works in the browser
-const probeRequest = async (request) => {
-  const results = [];
-  const run = async (name, fn) => {
-    const started = Date.now();
-    try {
-      const value = await fn();
-      results.push(`${name}: ok ${value} (${Date.now() - started}ms)`);
-    } catch (e) {
-      results.push(`${name}: FAIL ${e} (${Date.now() - started}ms)`);
-    }
-  };
-
-  await run("arrayBuffer", async () => {
-    const buffer = await request.clone().arrayBuffer();
-    return `${buffer.byteLength}B`;
-  });
-  await run("blob", async () => {
-    const blob = await request.clone().blob();
-    return `${blob.size}B`;
-  });
-  await run("stream", async () => {
-    if (!request.body) return "no body";
-    const reader = request.clone().body.getReader();
-    let bytes = 0;
-    let chunks = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      bytes += value.byteLength;
-      chunks++;
-    }
-    return `${bytes}B in ${chunks} chunks`;
-  });
-
-  return results;
-};
-
-// TEMPORARY DEBUG: send the diagnostics to the server, where they are
-// written to the container log (see pages/share-debug-log.tsx)
-const sendDebugToServer = async (info) => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3000);
-  try {
-    const data = encodeURIComponent(JSON.stringify(info).slice(0, 4000));
-    await fetch(`/share-debug-log?d=${data}`, {
-      cache: "no-store",
-      signal: controller.signal,
-    });
-  } catch (e) {
-    // ignore
-  } finally {
-    clearTimeout(timer);
-  }
-};
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8");
@@ -103,9 +32,8 @@ const getBoundary = (contentType, bytes) => {
   return null;
 };
 
-// Minimal multipart/form-data parser, used when the browser's own parser fails
-// (Samsung Internet: request.formData() and Response.formData() throw
-// "TypeError: Failed to fetch" although the body itself can be read).
+// Minimal multipart/form-data parser that returns all file parts. It is only
+// used when the browser's own parser fails, see below.
 const parseMultipartFiles = (buffer, contentType) => {
   const bytes = new Uint8Array(buffer);
   const boundary = getBoundary(contentType, bytes);
@@ -132,11 +60,14 @@ const parseMultipartFiles = (buffer, contentType) => {
       if (filename) {
         const type = /content-type:\s*([^\r\n]+)/i.exec(headers);
         const dataStart = headersEnd + 4;
-        const dataEnd = Math.max(dataStart, next - 2); // strip the CRLF before the next delimiter
+        // Strip the CRLF before the next delimiter
+        const dataEnd = Math.max(dataStart, next - 2);
         files.push(
-          new File([bytes.slice(dataStart, dataEnd)], filename[1] || "shared-file", {
-            type: type ? type[1].trim() : "",
-          }),
+          new File(
+            [bytes.slice(dataStart, dataEnd)],
+            filename[1] || "shared-file",
+            { type: type ? type[1].trim() : "" },
+          ),
         );
       }
     }
@@ -144,32 +75,6 @@ const parseMultipartFiles = (buffer, contentType) => {
   }
 
   return files;
-};
-
-// TEMPORARY DEBUG: describe the multipart structure of the body
-const inspectMultipart = (buffer, contentType) => {
-  const bytes = new Uint8Array(buffer);
-  const boundary = getBoundary(contentType, bytes);
-  let delimiterCount = 0;
-  if (boundary) {
-    const delimiter = encoder.encode(`--${boundary}`);
-    let pos = indexOfBytes(bytes, delimiter, 0);
-    while (pos !== -1) {
-      delimiterCount++;
-      pos = indexOfBytes(bytes, delimiter, pos + delimiter.length);
-    }
-  }
-  const firstHeadersEnd = indexOfBytes(bytes, encoder.encode("\r\n\r\n"), 0);
-  const previewLength = Math.min(
-    firstHeadersEnd === -1 ? 300 : firstHeadersEnd,
-    300,
-  );
-  return {
-    bodyBytes: bytes.length,
-    boundary,
-    delimiterCount,
-    firstPartHeaders: decoder.decode(bytes.subarray(0, previewLength)),
-  };
 };
 
 self.addEventListener("fetch", (event) => {
@@ -181,29 +86,13 @@ self.addEventListener("fetch", (event) => {
 
   event.respondWith(
     (async () => {
-      const debug = {
-        version: "v3-manual-fallback",
-        at: new Date().toISOString(),
-        userAgent: self.navigator.userAgent,
-        requestContentType: (
-          event.request.headers.get("content-type") || ""
-        ).split(";")[0],
-        contentLength: event.request.headers.get("content-length"),
-        mode: event.request.mode,
-        hasBody: !!event.request.body,
-        probes: [],
-        entries: [],
-        error: null,
-      };
-      debug.probes = await probeRequest(event.request);
       try {
-        // The body is read as a buffer first. Samsung Internet throws
-        // "Failed to fetch" in the browser's multipart parser, so the files are
-        // parsed manually if that happens.
+        // Read the body as a buffer first. Samsung Internet throws
+        // "TypeError: Failed to fetch" in request.formData() and
+        // Response.formData(), although the body itself can be read. In that
+        // case the files are parsed manually.
         const contentType = event.request.headers.get("content-type") || "";
         const body = await event.request.arrayBuffer();
-        debug.contentType = contentType;
-        debug.body = inspectMultipart(body, contentType);
 
         // Accept files from any form field, not only "files", because some
         // browsers do not use the field name declared in the manifest
@@ -215,15 +104,9 @@ self.addEventListener("fetch", (event) => {
           for (const [, value] of formData.entries()) {
             if (typeof value !== "string") files.push(value);
           }
-          debug.parsedBy = "native";
-        } catch (e) {
-          debug.nativeError = String(e);
+        } catch {
           files = parseMultipartFiles(body, contentType);
-          debug.parsedBy = "manual";
         }
-        debug.entries = files.map(
-          (file) => `file ${file.name} ${file.type} ${file.size}B`,
-        );
 
         // Drop files from earlier shares that were never picked up
         await caches.delete(SHARE_TARGET_CACHE);
@@ -247,10 +130,7 @@ self.addEventListener("fetch", (event) => {
         );
       } catch (e) {
         console.error("Failed to store shared files", e);
-        debug.error = String(e);
       }
-      await storeDebug(debug);
-      await sendDebugToServer(debug);
 
       // 303 turns the POST into a GET request for the upload page
       return Response.redirect(new URL("/upload", self.location.origin), 303);
