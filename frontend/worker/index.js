@@ -100,7 +100,15 @@ self.addEventListener("fetch", (event) => {
       };
       debug.probes = await probeRequest(event.request);
       try {
-        const formData = await event.request.formData();
+        // Samsung Internet fails with "Failed to fetch" on request.formData(),
+        // although the body itself can be read. So the body is read as a
+        // buffer and parsed from a new Response instead.
+        const body = await event.request.arrayBuffer();
+        const formData = await new Response(body, {
+          headers: {
+            "Content-Type": event.request.headers.get("content-type") || "",
+          },
+        }).formData();
         for (const [key, value] of formData.entries()) {
           debug.entries.push(
             typeof value === "string"
