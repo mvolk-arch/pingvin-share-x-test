@@ -58,6 +58,24 @@ const probeRequest = async (request) => {
   return results;
 };
 
+// TEMPORARY DEBUG: send the diagnostics to the server, where they are
+// written to the container log (see pages/share-debug-log.tsx)
+const sendDebugToServer = async (info) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const data = encodeURIComponent(JSON.stringify(info).slice(0, 6000));
+    await fetch(`/share-debug-log?d=${data}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } catch (e) {
+    // ignore
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
@@ -122,6 +140,7 @@ self.addEventListener("fetch", (event) => {
         debug.error = String(e);
       }
       await storeDebug(debug);
+      await sendDebugToServer(debug);
 
       // 303 turns the POST into a GET request for the upload page
       return Response.redirect(new URL("/upload", self.location.origin), 303);
