@@ -19,6 +19,45 @@ const storeDebug = async (info) => {
   }
 };
 
+// TEMPORARY DEBUG: try to read the body in different ways on clones of the
+// request to see which of them works in the browser
+const probeRequest = async (request) => {
+  const results = [];
+  const run = async (name, fn) => {
+    const started = Date.now();
+    try {
+      const value = await fn();
+      results.push(`${name}: ok ${value} (${Date.now() - started}ms)`);
+    } catch (e) {
+      results.push(`${name}: FAIL ${e} (${Date.now() - started}ms)`);
+    }
+  };
+
+  await run("arrayBuffer", async () => {
+    const buffer = await request.clone().arrayBuffer();
+    return `${buffer.byteLength}B`;
+  });
+  await run("blob", async () => {
+    const blob = await request.clone().blob();
+    return `${blob.size}B`;
+  });
+  await run("stream", async () => {
+    if (!request.body) return "no body";
+    const reader = request.clone().body.getReader();
+    let bytes = 0;
+    let chunks = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      chunks++;
+    }
+    return `${bytes}B in ${chunks} chunks`;
+  });
+
+  return results;
+};
+
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
@@ -30,10 +69,18 @@ self.addEventListener("fetch", (event) => {
     (async () => {
       const debug = {
         at: new Date().toISOString(),
-        requestContentType: event.request.headers.get("content-type"),
+        userAgent: self.navigator.userAgent,
+        requestContentType: (
+          event.request.headers.get("content-type") || ""
+        ).split(";")[0],
+        contentLength: event.request.headers.get("content-length"),
+        mode: event.request.mode,
+        hasBody: !!event.request.body,
+        probes: [],
         entries: [],
         error: null,
       };
+      debug.probes = await probeRequest(event.request);
       try {
         const formData = await event.request.formData();
         for (const [key, value] of formData.entries()) {

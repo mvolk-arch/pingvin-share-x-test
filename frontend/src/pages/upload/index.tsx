@@ -221,7 +221,27 @@ const Upload = ({
 
     // TEMPORARY DEBUG (dockhand only, not part of the pull request)
     consumeShareDebug().then((debug) => {
-      if (debug) toast.error(`share debug: ${debug}`, { autoClose: false });
+      if (!debug) return;
+      let text = debug;
+      try {
+        text = JSON.stringify(JSON.parse(debug), null, 2);
+      } catch {
+        // show the raw text
+      }
+      modals.openModal({
+        title: "share debug",
+        children: (
+          <pre
+            style={{
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              fontSize: 12,
+            }}
+          >
+            {text}
+          </pre>
+        ),
+      });
     });
 
     consumeSharedFiles().then((sharedFiles) => {
