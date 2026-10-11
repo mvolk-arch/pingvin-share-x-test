@@ -64,7 +64,7 @@ const sendDebugToServer = async (info) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 3000);
   try {
-    const data = encodeURIComponent(JSON.stringify(info).slice(0, 6000));
+    const data = encodeURIComponent(JSON.stringify(info).slice(0, 4000));
     await fetch(`/share-debug-log?d=${data}`, {
       cache: "no-store",
       signal: controller.signal,
@@ -74,6 +74,102 @@ const sendDebugToServer = async (info) => {
   } finally {
     clearTimeout(timer);
   }
+};
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8");
+
+const indexOfBytes = (haystack, needle, from = 0) => {
+  const first = needle[0];
+  const limit = haystack.length - needle.length;
+  for (let i = from; i <= limit; i++) {
+    if (haystack[i] !== first) continue;
+    let j = 1;
+    while (j < needle.length && haystack[i + j] === needle[j]) j++;
+    if (j === needle.length) return i;
+  }
+  return -1;
+};
+
+const getBoundary = (contentType, bytes) => {
+  const match = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  if (match) return (match[1] || match[2]).trim();
+
+  // Fall back to the first line of the body ("--<boundary>")
+  const lineEnd = indexOfBytes(bytes, encoder.encode("\r\n"));
+  if (lineEnd > 2 && bytes[0] === 45 && bytes[1] === 45) {
+    return decoder.decode(bytes.subarray(2, lineEnd));
+  }
+  return null;
+};
+
+// Minimal multipart/form-data parser, used when the browser's own parser fails
+// (Samsung Internet: request.formData() and Response.formData() throw
+// "TypeError: Failed to fetch" although the body itself can be read).
+const parseMultipartFiles = (buffer, contentType) => {
+  const bytes = new Uint8Array(buffer);
+  const boundary = getBoundary(contentType, bytes);
+  if (!boundary) return [];
+
+  const delimiter = encoder.encode(`--${boundary}`);
+  const headerEnd = encoder.encode("\r\n\r\n");
+  const files = [];
+
+  let pos = indexOfBytes(bytes, delimiter, 0);
+  while (pos !== -1) {
+    const partStart = pos + delimiter.length;
+    // "--" right after the delimiter marks the end of the body
+    if (bytes[partStart] === 45 && bytes[partStart + 1] === 45) break;
+
+    const next = indexOfBytes(bytes, delimiter, partStart);
+    if (next === -1) break;
+
+    const headersStart = partStart + 2; // skip the CRLF after the delimiter
+    const headersEnd = indexOfBytes(bytes, headerEnd, headersStart);
+    if (headersEnd !== -1 && headersEnd < next) {
+      const headers = decoder.decode(bytes.subarray(headersStart, headersEnd));
+      const filename = /filename="([^"]*)"/i.exec(headers);
+      if (filename) {
+        const type = /content-type:\s*([^\r\n]+)/i.exec(headers);
+        const dataStart = headersEnd + 4;
+        const dataEnd = Math.max(dataStart, next - 2); // strip the CRLF before the next delimiter
+        files.push(
+          new File([bytes.slice(dataStart, dataEnd)], filename[1] || "shared-file", {
+            type: type ? type[1].trim() : "",
+          }),
+        );
+      }
+    }
+    pos = next;
+  }
+
+  return files;
+};
+
+// TEMPORARY DEBUG: describe the multipart structure of the body
+const inspectMultipart = (buffer, contentType) => {
+  const bytes = new Uint8Array(buffer);
+  const boundary = getBoundary(contentType, bytes);
+  let delimiterCount = 0;
+  if (boundary) {
+    const delimiter = encoder.encode(`--${boundary}`);
+    let pos = indexOfBytes(bytes, delimiter, 0);
+    while (pos !== -1) {
+      delimiterCount++;
+      pos = indexOfBytes(bytes, delimiter, pos + delimiter.length);
+    }
+  }
+  const firstHeadersEnd = indexOfBytes(bytes, encoder.encode("\r\n\r\n"), 0);
+  const previewLength = Math.min(
+    firstHeadersEnd === -1 ? 300 : firstHeadersEnd,
+    300,
+  );
+  return {
+    bodyBytes: bytes.length,
+    boundary,
+    delimiterCount,
+    firstPartHeaders: decoder.decode(bytes.subarray(0, previewLength)),
+  };
 };
 
 self.addEventListener("fetch", (event) => {
@@ -86,6 +182,7 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     (async () => {
       const debug = {
+        version: "v3-manual-fallback",
         at: new Date().toISOString(),
         userAgent: self.navigator.userAgent,
         requestContentType: (
@@ -100,28 +197,33 @@ self.addEventListener("fetch", (event) => {
       };
       debug.probes = await probeRequest(event.request);
       try {
-        // Samsung Internet fails with "Failed to fetch" on request.formData(),
-        // although the body itself can be read. So the body is read as a
-        // buffer and parsed from a new Response instead.
+        // The body is read as a buffer first. Samsung Internet throws
+        // "Failed to fetch" in the browser's multipart parser, so the files are
+        // parsed manually if that happens.
+        const contentType = event.request.headers.get("content-type") || "";
         const body = await event.request.arrayBuffer();
-        const formData = await new Response(body, {
-          headers: {
-            "Content-Type": event.request.headers.get("content-type") || "",
-          },
-        }).formData();
-        for (const [key, value] of formData.entries()) {
-          debug.entries.push(
-            typeof value === "string"
-              ? `${key}: text(${value.length})`
-              : `${key}: file ${value.name} ${value.type} ${value.size}B`,
-          );
-        }
+        debug.contentType = contentType;
+        debug.body = inspectMultipart(body, contentType);
+
         // Accept files from any form field, not only "files", because some
         // browsers do not use the field name declared in the manifest
-        const files = [];
-        for (const [, value] of formData.entries()) {
-          if (typeof value !== "string") files.push(value);
+        let files = [];
+        try {
+          const formData = await new Response(body, {
+            headers: { "Content-Type": contentType },
+          }).formData();
+          for (const [, value] of formData.entries()) {
+            if (typeof value !== "string") files.push(value);
+          }
+          debug.parsedBy = "native";
+        } catch (e) {
+          debug.nativeError = String(e);
+          files = parseMultipartFiles(body, contentType);
+          debug.parsedBy = "manual";
         }
+        debug.entries = files.map(
+          (file) => `file ${file.name} ${file.type} ${file.size}B`,
+        );
 
         // Drop files from earlier shares that were never picked up
         await caches.delete(SHARE_TARGET_CACHE);
