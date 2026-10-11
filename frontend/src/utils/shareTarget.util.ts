@@ -6,6 +6,21 @@ const SHARE_TARGET_CACHE = "share-target";
 // Shared files that were not picked up within this time are discarded
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+// TEMPORARY DEBUG (dockhand only, not part of the pull request)
+export const consumeShareDebug = async (): Promise<string | null> => {
+  try {
+    if (typeof window === "undefined" || !("caches" in window)) return null;
+    if (!(await caches.has("share-target-debug"))) return null;
+    const cache = await caches.open("share-target-debug");
+    const response = await cache.match("/share-target-debug");
+    const text = response ? await response.text() : null;
+    await caches.delete("share-target-debug");
+    return text;
+  } catch (e) {
+    return `debug read failed: ${e}`;
+  }
+};
+
 /**
  * Reads files that were shared to the installed web app (Web Share Target API)
  * from the cache filled by the service worker and removes them from the cache.

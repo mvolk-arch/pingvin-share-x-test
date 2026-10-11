@@ -4,6 +4,20 @@
 
 const SHARE_TARGET_PATH = "/share-target";
 const SHARE_TARGET_CACHE = "share-target";
+// TEMPORARY DEBUG (dockhand only, not part of the pull request)
+const SHARE_DEBUG_CACHE = "share-target-debug";
+
+const storeDebug = async (info) => {
+  try {
+    const cache = await caches.open(SHARE_DEBUG_CACHE);
+    await cache.put(
+      new Request("/share-target-debug"),
+      new Response(JSON.stringify(info)),
+    );
+  } catch (e) {
+    // ignore
+  }
+};
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
@@ -14,8 +28,21 @@ self.addEventListener("fetch", (event) => {
 
   event.respondWith(
     (async () => {
+      const debug = {
+        at: new Date().toISOString(),
+        requestContentType: event.request.headers.get("content-type"),
+        entries: [],
+        error: null,
+      };
       try {
         const formData = await event.request.formData();
+        for (const [key, value] of formData.entries()) {
+          debug.entries.push(
+            typeof value === "string"
+              ? `${key}: text(${value.length})`
+              : `${key}: file ${value.name} ${value.type} ${value.size}B`,
+          );
+        }
         // Accept files from any form field, not only "files", because some
         // browsers do not use the field name declared in the manifest
         const files = [];
@@ -45,7 +72,9 @@ self.addEventListener("fetch", (event) => {
         );
       } catch (e) {
         console.error("Failed to store shared files", e);
+        debug.error = String(e);
       }
+      await storeDebug(debug);
 
       // 303 turns the POST into a GET request for the upload page
       return Response.redirect(new URL("/upload", self.location.origin), 303);
